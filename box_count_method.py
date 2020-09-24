@@ -3,10 +3,10 @@ import csv
 import os, sys, getopt
 import tifffile as tiff
 import tkinter as tk
+from tkinter import filedialog
 import math
 import cv2
 import numpy as np
-from tkinter import filedialog
 import random
 import time
 import multiprocessing
@@ -59,66 +59,185 @@ def processArguments( settings ):
     return settings
 
 class phaseContent():
-    pass
+    # colors used in the example file
+    red = np.array((255,118,198), dtype = "uint8")
+    green = np.array((130,255,79), dtype = "uint8")
+    blue = np.array((0,0,255), dtype = "uint8")
 
-red = np.array((255,118,198), dtype = "uint8")
-green = np.array((130,255,79), dtype = "uint8")
-blue = np.array((0,0,255), dtype = "uint8")
+    # list of phases
+    phase_list = [red,green,blue]
+    phase_count = 3
 
-phase_list = [red,green,blue]
+    # list of columns within the main dataframe excluding phase contents
+    column_list = ['filename' , 'height', 'width' ]
 
-def read_dataset( settings, file, resultDF, showMasks = False ):
+    image_count = 0
+    tile_with = 0
+    tile_height = 0
 
-    selected_img = cv2.imread( settings["workingDirectory"] + os.sep + file, cv2.IMREAD_COLOR )
-    height, width = selected_img.shape[:2]
-    if ( height > 0 and width > 0 ):
-        #if ( settings["min_height"] > height or settings["min_height"] == 0 ) : settings["min_height"] = height
-        #if ( settings["min_width"] > width or settings["min_width"] == 0 ) : settings["min_width"] = width
-        
-        new_row = {'filename':file, 'height':height, 'width':width }
-        
-        mask_list = []
+    #
+    image_shuffle_count = 100
+    stdev_shuffle_count = 75
+    
+    stDev_mean = {}
+    stDev_stDev = {}
+    
+    # dataframes
+    phase_content_DF = None
 
-        plot_count = len(phase_list) + 1
+    def init_phase_list(self, phase_list):
+        if phase_list is not None: 
+            self.phase_list = phase_list
+            self.phase_count = len(self.phase_list)
+
+    def init_column_list(self):
+        i = 0
+        for phase in self.phase_list:
+            self.column_list.append( 'phase_{:02d}'.format(i) )
+            self.column_list.append( 'phase_{:02d}_percent'.format(i) )
+            i +=1
+
+    def show_masked_phases(self, img, mask_list):
+        plot_count = len(self.phase_list) + 1
         plot_column_count = math.ceil(plot_count/2)
         plot_pos = 1
         mask_index = 0
-        if showMasks: plt.subplot(2,plot_column_count,plot_pos),plt.imshow(selected_img)
-        for phase in phase_list:
+        plt.subplot(2,plot_column_count,plot_pos),plt.imshow(img)
+        for phase in self.phase_list:
             plot_pos += 1
-            mask_list.append( cv2.inRange(selected_img, phase, phase) )
 
-            if showMasks: plt.subplot(2,plot_column_count,plot_pos),plt.imshow(mask_list[mask_index])
-            
-            new_row['phase_{:02d}'.format(mask_index)] = cv2.countNonZero( mask_list[mask_index] )
-            new_row['phase_{:02d}_percent'.format(mask_index)] = new_row['phase_{:02d}'.format(mask_index)]/(height*width)*100
+            plt.subplot(2,plot_column_count,plot_pos),plt.imshow(mask_list[mask_index])
             mask_index +=1
 
-        if showMasks:
-            plt.show()
+        plt.show()
 
-        resultDF = resultDF.append(new_row, ignore_index=True)
-        return resultDF
+    def check_tile_dimension(self, height, width):
+        if self.tile_with + self.tile_height == 0:
+            self.tile_with = width
+            self.tile_height = height
+            return True
+        else:
+            if self.tile_with == width and self.tile_height == height:
+                return True
+            else:
+                print( 'Tile sizes do not match! (w: {} != {} | h: {} != {})'.format(width, self.tile_with, height, self.tile_height) )
+                sys.exit()
+        return False
 
-    else:
-        print('image dimensions are strange! ({} x {} px)'.format(height, width))
+    def getStdDevrow( self, experiment_list ):
+        stdDevRow = []
+        for i in range( len(experiment_list) ):
+            if i > 1:
+                stdDevRow.append( statistics.pstdev(experiment_list[:i]) )
+                #statistics.pstdev( experiment_list[:10] )
+                #population stddev (keine Stichprobe, also nicht n-1)
+                #print('i={}, ±{:.2f} %'.format(i, statistics.pstdev(experiment_list[:i])))
+            #if i > 96:
+            #    print(i, len(experiment_list[:i]))
+        return stdDevRow
 
-def getStdDevrow( experiment_list ):
-    stdDevRow = []
-    len(experiment_list)
-    for i in range( len(experiment_list) ):
-        if i > 1:
-            stdDevRow.append( statistics.pstdev(experiment_list[:i]) )
-            #statistics.pstdev( experiment_list[:10] )
-            #population stddev (keine Stichprobe, also nicht n-1)
-            #print('i={}, ±{:.2f} %'.format(i, statistics.pstdev(experiment_list[:i])))
-    return stdDevRow
+    def read_dataset( self, img, file, showMasks = False ):
+        height, width = img.shape[:2]
+        if self.check_tile_dimension(height, width):            
+            new_row = {'filename':file, 'height':height, 'width':width }
+            
+            mask_list = []
+
+            mask_index = 0
+            for phase in self.phase_list:
+                mask_list.append( cv2.inRange(img, phase, phase) )
+
+                new_row['phase_{:02d}'.format(mask_index)] = cv2.countNonZero( mask_list[mask_index] )
+                new_row['phase_{:02d}_percent'.format(mask_index)] = new_row['phase_{:02d}'.format(mask_index)]/(height*width)*100
+                mask_index +=1
+
+            self.phase_content_DF = self.phase_content_DF.append(new_row, ignore_index=True)
+            if showMasks: self.show_masked_phases(img, mask_list)
+
+    def load_files(self, folder):
+        print('Checking files in the directory')
+        for file in os.listdir(folder):
+            if ( file.endswith( ".tif" ) ):
+                if self.image_count > 0 and self.image_count % 10 == 0: 
+                    print('processing file #{:02d}'.format( self.image_count ))#, end='')
+                    
+                img = cv2.imread( folder + os.sep + file, cv2.IMREAD_COLOR )
+                self.read_dataset( img, file )
+                
+                self.image_count += 1
+        print('Found {} images'.format(self.image_count))
+
+    
+    def __init__(self, folder, phase_list=None ):
+        self.folder = folder
+        self.target_folder = os.path.abspath(os.path.join(self.folder, os.pardir))
+        self.init_phase_list(phase_list)
+        self.init_column_list()
+
+        self.phase_content_DF = pd.DataFrame(columns = self.column_list)
+
+        self.load_files(folder)
+
+        # make shure the image_shuffle_count does not exceed the image count!
+        if self.image_shuffle_count > self.image_count:
+            self.image_shuffle_count = self.image_count
+
+        # main process 
+        if ( self.image_count > 1 ):
+            # calculate stabw
+            keyName = 'phase_{:02d}_percent'
+            sampleFraction = 10/self.image_count
+            self.resultList = {}
+            self.stDevDFList = {}
+            self.stDevcols = list(range(self.image_shuffle_count-2))
+            self.phase_mean = {}
+
+            i = 0
+            # create headers for each phase
+            for phase in self.phase_list:
+                key = keyName.format(i)
+                self.resultList[key] = []
+                self.stDevDFList[key] = pd.DataFrame(columns = self.stDevcols)
+                self.stDev_mean[key] = []
+                self.stDev_stDev[key] = []
+                i +=1
+            
+            # randomly select images (different image amount from 0 to image_shuffle_count)
+            # and process the mean phase area for each phase
+            for c in range(0, self.image_shuffle_count):
+                sampleDF = self.phase_content_DF.sample(frac=sampleFraction)
+                i = 0
+                for phase in self.phase_list:
+                    key = keyName.format(i)
+                    self.phase_mean[key] = sampleDF[key].mean(skipna = True)
+                    self.resultList[key].append( self.phase_mean[key] )
+                    i +=1
+
+            i = 0
+            for phase in self.phase_list:
+                key = keyName.format(i)
+                print('mean std deviation of ' + key)
+                for j in range( self.stdev_shuffle_count ):
+                    random.shuffle( self.resultList[key] )
+                    row = self.getStdDevrow( self.resultList[key] )
+                    self.stDevDFList[key] = self.stDevDFList[key].append( pd.Series(row, index = self.stDevcols) , ignore_index=True)
+                
+                for col in self.stDevcols:
+                    self.stDev_mean[key].append( self.stDevDFList[key][col].mean() )
+                    self.stDev_stDev[key].append( self.stDevDFList[key][col].values.std(ddof=1) )
+                    #print( ' - {:02d} images: {:.2f}±{:.2f} % '.format(col+2, mean, stdev) )
+
+                i +=1
+        else:
+            print( "not enough images found!" )
+
 
 ### actual program start
 if __name__ == '__main__':
     #remove root windows
     root = tk.Tk()
     root.withdraw()
+
     coreCount = multiprocessing.cpu_count()
     settings = {
         "showDebuggingOutput" : False,
@@ -132,10 +251,7 @@ if __name__ == '__main__':
         "outputDirName" : "corrected",
         "count" : 0,
         "coreCount" : multiprocessing.cpu_count(),
-        "processCount" : (coreCount - 1) if coreCount > 1 else 1,
-        "min_height" : 0,
-        "min_width" : 0,
-        "image_count": 0
+        "processCount" : (coreCount - 1) if coreCount > 1 else 1
     }
 
     programInfo()
@@ -157,70 +273,6 @@ if __name__ == '__main__':
         if not os.path.exists( settings["targetDirectory"] ):
             os.makedirs( settings["targetDirectory"] )
 
-        column_list = ['filename' , 'height', 'width' ]
-        mask_index = 0
-        for phase in phase_list:
-            column_list.append( 'phase_{:02d}'.format(mask_index) )
-            column_list.append( 'phase_{:02d}_percent'.format(mask_index) )
-            mask_index +=1
-
-
-        resultDF = pd.DataFrame(columns = column_list)
-
-        print('Checking files in the directory')
-        for file in os.listdir(settings["workingDirectory"]):
-            if ( file.endswith( ".tif" ) ):
-                fileList.append( file )
-                if settings["count"] > 0 and settings["count"] % 10 == 0: 
-                    print('processing file #{:02d}'.format( settings["count"] ))#, end='')
-                resultDF = read_dataset( settings, file, resultDF )
-                
-                settings["count"] += 1
-        print('Found {} images'.format(settings["count"]))
-        
-        
-        if ( settings["count"] > 1 ):
-            # calculate stabw
-            keyName = 'phase_{:02d}_percent'
-            experimentCount = 100
-            sampleFraction = 10/len(resultDF)
-            resultList = {}
-            stDevDFList = {}
-            stDevcols = list(range(experimentCount-2))
-            i = 0
-            for phase in phase_list:
-                key = keyName.format(i)
-                resultList[key] = []
-                stDevDFList[key] = pd.DataFrame(columns = stDevcols )
-                i +=1
-            
-            for c in range(0, experimentCount):
-                sampleDF = resultDF.sample(frac=sampleFraction)
-                i = 0
-                for phase in phase_list:
-                    key = keyName.format(i)
-                    resultList[key].append( sampleDF[key].mean(skipna = True) )
-                    i +=1
-
-            randomTries = 100
-            i = 0
-            for phase in phase_list:
-                key = keyName.format(i)
-                print('mean std deviation of ' + key)
-                for j in range( randomTries ):
-                    random.shuffle( resultList[key] )
-                    #print(  '{}: {:.2f}'.format(key, statistics.pstdev( resultList[key] ) ) )
-                    row = getStdDevrow( resultList[key] )
-                    stDevDFList[key] = stDevDFList[key].append( pd.Series(row, index = stDevcols) , ignore_index=True)  
-                    #print(resultList[key])
-                
-                for col in stDevcols:
-                    stdev = stDevDFList[key][col].values.std(ddof=1)
-                    mean = stDevDFList[key][col].mean()
-                    print( ' - {:02d} images: {:.2f}±{:.2f} % '.format(col+2, mean, stdev) )
-
-                i +=1
-        else:
-            print( "not enough images found!" )
+    phaseContent = phaseContent(settings["workingDirectory"])
     
     print( "Script DONE!" )
