@@ -213,6 +213,7 @@ class phaseContent():
                     self.resultList[key].append( self.phase_mean[key] )
                     i +=1
 
+            # get the standard deviation of the standard deviation
             i = 0
             for phase in self.phase_list:
                 key = keyName.format(i)
