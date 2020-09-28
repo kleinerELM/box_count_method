@@ -17,6 +17,19 @@ import random
 import matplotlib
 import matplotlib.pyplot as plt
 
+home_dir = os.path.dirname(os.path.realpath(__file__))
+
+rsb_file = 'image_slicer'
+rsb_path = os.path.dirname( home_dir ) + os.sep + 'image_slicer' + os.sep
+if ( os.path.isdir( rsb_path ) and os.path.isfile( rsb_path +rsb_file + '.py' ) or os.path.isfile( home_dir + rsb_file + '.py' ) ):
+    if ( os.path.isdir( rsb_path ) ): sys.path.insert( 1, rsb_path )
+    import image_slicer
+else:
+    programInfo()
+    print( 'missing ' + rsb_path + rsb_file + '.py!' )
+    print( 'download from https://github.com/kleinerELM/image_slicer' )
+    sys.exit()
+
 def programInfo():
     print("#########################################################")
     print("# Automatically stich a random image from otherwise     #")
@@ -30,7 +43,11 @@ def programInfo():
     print()
 
 #### process given command line arguments
-def processArguments( settings ):
+def processArguments():
+    settings = image_slicer.getBaseSettings()
+    settings['slice_image'] = False
+    settings["col_count"] = 10
+    settings["row_count"] = 10
     argv = sys.argv[1:]
     usage = sys.argv[0] + " [-h] [-x] [-y] [-d]"
     try:
@@ -41,6 +58,9 @@ def processArguments( settings ):
         if opt == '-h':
             print( 'usage: ' + usage )
             print( '-h,                  : show this help' )
+            print( '-s                   : slice the image [OFF]' )
+            print( '-x,                  : amount of slices in x direction [{}]'.format(settings["col_count"]) )
+            print( '-y,                  : amount of slices in y direction [{}]'.format(settings["row_count"]) )
             print( '-o,                  : setting output directory name [{}]'.format(settings["outputDirName"]) )
             print( '-c                   : creating subfolders for each image [./{}/FILENAME/]'.format(settings["outputDirName"]) )
             print( '-d                   : show debug output' )
@@ -52,9 +72,26 @@ def processArguments( settings ):
         elif opt in ("-c"):
             settings["createFolderPerImage"] = True
             print( 'creating subfolders for images' )
+        elif opt in ("-s"):
+            settings["slice_image"] = True
+            print( 'The image will be sliced' )
+        elif opt in ("-x"):
+            settings["col_count"] = int( arg )
+            col_changed = True
+            print( 'changed amount of slices in x direction to {}'.format(settings["col_count"]) )
+        elif opt in ("-y"):
+            settings["row_count"] = int( arg )
+            row_changed = True
         elif opt in ("-d"):
             print( 'show debugging output' )
             settings["showDebuggingOutput"] = True
+    if settings["slice_image"]:
+        if col_changed and not row_changed:
+            settings["row_count"] = settings["col_count"]
+            print( 'changed amount of slices in y direction also to ' + str( settings["row_count"] ) )
+        elif row_changed and not col_changed:
+            settings["col_count"] = settings["row_count"]
+            print( 'changed amount of slices in x direction also to ' + str( settings["col_count"] ) )
     print( '' )
     return settings
 
@@ -66,6 +103,7 @@ class phaseContent():
 
     # list of phases
     phase_list = [red,green,blue]
+    phase_names = ['resin/pores', 'C-S-H', 'C₃S']
     phase_count = 3
 
     # list of columns within the main dataframe excluding phase contents
@@ -159,16 +197,64 @@ class phaseContent():
         for file in os.listdir(folder):
             if ( file.endswith( ".tif" ) ):
                 if self.image_count > 0 and self.image_count % 10 == 0: 
-                    print('processing file #{:02d}'.format( self.image_count ))#, end='')
+                    print('processing file #{:02d} of {:02d}'.format( self.image_count, self.image_count ))#, end='')
                     
                 img = cv2.imread( folder + os.sep + file, cv2.IMREAD_COLOR )
                 self.read_dataset( img, file )
                 
                 self.image_count += 1
         print('Found {} images'.format(self.image_count))
+        self.phase_content_DF.to_csv( folder+'box_count_intermediate.csv' )
 
-    
-    def __init__(self, folder, phase_list=None ):
+    def reprocess_mean_and_stdev(self, repeat_sampling=75, verbose=True):
+        # main process 
+        if ( self.image_count > 1 ):
+            # calculate stabw
+            keyName = 'phase_{:02d}_percent'
+            sampleFraction = 0.5# 10/self.image_count
+            self.meanAfterNExperiments = {}
+            self.stDevDFList = {}
+            self.stDevcols = list(range(self.image_shuffle_count-2))
+            self.phase_mean = {}
+
+            if verbose: print( 'process {} experiments'.format(repeat_sampling))
+
+            # randomly select images (different image amount from 0 to image_shuffle_count)
+            # and process the mean phase area for each phase
+            
+            # für jede Phase
+            for i in range(self.phase_count):
+                key = keyName.format(i)
+                # create headers for each phase
+                self.meanAfterNExperiments[key] = []
+                self.stDevDFList[key] = pd.DataFrame(columns = self.stDevcols)
+                self.stDev_mean[key] = []
+                self.stDev_stDev[key] = []
+
+                if verbose: print( 'mean & std deviation of {}'.format(self.phase_names[i]) )
+                self.meanAfterNExperiments[key] = {}
+                # für eine Samplegröße von 0 bis self.image_shuffle_count (100) Bildern
+                for c in range(1, self.image_shuffle_count+1):
+                    
+                    #if c > 0 and c % 10 == 0: 
+                    #    print('{:02d} / {:02d}'.format( c-1, self.image_shuffle_count ))
+
+                    self.meanAfterNExperiments[key][c] = []
+                    sampleFraction = c/self.image_count
+                    # wiederholungen
+                    for j in range( repeat_sampling ):
+                        sampleDF = self.phase_content_DF.sample(frac=sampleFraction)
+                        self.meanAfterNExperiments[key][c].append( sampleDF[key].mean(skipna = True) )
+                    
+                    self.stDev_mean[key].append( statistics.mean( self.meanAfterNExperiments[key][c] ) )
+                    self.stDev_stDev[key].append( statistics.stdev( self.meanAfterNExperiments[key][c] ) )
+            
+            if verbose: print( '-'*20 )
+        else:
+            print( "not enough images found!" )
+
+
+    def __init__(self, folder, phase_list=None, phase_names=None ):
         self.folder = folder
         self.target_folder = os.path.abspath(os.path.join(self.folder, os.pardir))
         self.init_phase_list(phase_list)
@@ -182,55 +268,7 @@ class phaseContent():
         if self.image_shuffle_count > self.image_count:
             self.image_shuffle_count = self.image_count
 
-        # main process 
-        if ( self.image_count > 1 ):
-            # calculate stabw
-            keyName = 'phase_{:02d}_percent'
-            sampleFraction = 10/self.image_count
-            self.resultList = {}
-            self.stDevDFList = {}
-            self.stDevcols = list(range(self.image_shuffle_count-2))
-            self.phase_mean = {}
-
-            i = 0
-            # create headers for each phase
-            for phase in self.phase_list:
-                key = keyName.format(i)
-                self.resultList[key] = []
-                self.stDevDFList[key] = pd.DataFrame(columns = self.stDevcols)
-                self.stDev_mean[key] = []
-                self.stDev_stDev[key] = []
-                i +=1
-            
-            # randomly select images (different image amount from 0 to image_shuffle_count)
-            # and process the mean phase area for each phase
-            for c in range(0, self.image_shuffle_count):
-                sampleDF = self.phase_content_DF.sample(frac=sampleFraction)
-                i = 0
-                for phase in self.phase_list:
-                    key = keyName.format(i)
-                    self.phase_mean[key] = sampleDF[key].mean(skipna = True)
-                    self.resultList[key].append( self.phase_mean[key] )
-                    i +=1
-
-            # get the standard deviation of the standard deviation
-            i = 0
-            for phase in self.phase_list:
-                key = keyName.format(i)
-                print('mean std deviation of ' + key)
-                for j in range( self.stdev_shuffle_count ):
-                    random.shuffle( self.resultList[key] )
-                    row = self.getStdDevrow( self.resultList[key] )
-                    self.stDevDFList[key] = self.stDevDFList[key].append( pd.Series(row, index = self.stDevcols) , ignore_index=True)
-                
-                for col in self.stDevcols:
-                    self.stDev_mean[key].append( self.stDevDFList[key][col].mean() )
-                    self.stDev_stDev[key].append( self.stDevDFList[key][col].values.std(ddof=1) )
-                    #print( ' - {:02d} images: {:.2f}±{:.2f} % '.format(col+2, mean, stdev) )
-
-                i +=1
-        else:
-            print( "not enough images found!" )
+        self.reprocess_mean_and_stdev(self.stdev_shuffle_count)
 
 
 ### actual program start
@@ -240,39 +278,34 @@ if __name__ == '__main__':
     root.withdraw()
 
     coreCount = multiprocessing.cpu_count()
-    settings = {
-        "showDebuggingOutput" : False,
-        "delete_interim_results" : True,
-        "col_count" : 2,
-        "row_count" : 2,
-        "home_dir" : os.path.dirname(os.path.realpath(__file__)),
-        "workingDirectory" : "",
-        "targetDirectory"  : "resulting_sets",
-        "referenceFilePath" : "",
-        "outputDirName" : "corrected",
-        "count" : 0,
+    mc_settings = {
         "coreCount" : multiprocessing.cpu_count(),
         "processCount" : (coreCount - 1) if coreCount > 1 else 1
     }
 
     programInfo()
     settings = processArguments( settings )
-    print( "Please select the directory with the source image tiles.", end="\r" )
-    settings["workingDirectory"] = filedialog.askdirectory(title='Please select the image / working directory')
-    print( "                                                        ", end="\r" )
 
     if ( settings["showDebuggingOutput"] ) : 
-        print( 'Found ' + str( settings["coreCount"] ) + ' CPU cores. Using max. ' + str( settings["processCount"] ) + ' processes at once.' )
+        print( 'Found {} CPU cores. Using max. {} processes at once.'.format(settings["coreCount"], settings["processCount"]) )
         print( "I am living in '" + settings["home_dir"] + "'" )
         print( "Selected working directory: " + settings["workingDirectory"], end='\n\n' )
-        print( "Selected reference file: " + os.path.basename( settings["referenceFilePath"] ) )
 
-    ## count files
+    if settings["slice_image"]:
+        settings["filepath"] = filedialog.askopenfilename( title='Please select the reference image', filetypes=[("Tiff images", "*.tif;*.tiff")] )
+        settings["workingDirectory"] = os.path.dirname( settings["filepath"] )
+        scaling = image_slicer.sliceImage( settings, settings["filepath"] )
+    else:
+        print( "Please select the directory with the source image tiles.", end="\r" )
+        settings["workingDirectory"] = filedialog.askdirectory(title='Please select the working directory')
+        print( " "*60, end="\r" )
+
+
     fileList = []
     if os.path.isdir( settings["workingDirectory"] ):
-        settings["targetDirectory"] = settings["workingDirectory"] + os.sep + settings["outputDirName"] + os.sep
-        if not os.path.exists( settings["targetDirectory"] ):
-            os.makedirs( settings["targetDirectory"] )
+        settings["outputDirectory"] = settings["workingDirectory"] + os.sep + settings["outputDirName"] + os.sep
+        if not os.path.exists( settings["outputDirectory"] ):
+            os.makedirs( settings["outputDirectory"] )
 
     phaseContent = phaseContent(settings["workingDirectory"])
     
