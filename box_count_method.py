@@ -84,7 +84,6 @@ def processArguments():
             print( '-s                   : slice the image [OFF]' )
             print( '-x,                  : amount of slices in x direction [{}]'.format(settings["col_count"]) )
             print( '-y,                  : amount of slices in y direction [{}]'.format(settings["row_count"]) )
-            #print( '-o,                  : setting output directory name [{}]'.format(settings["outputDirectory"]) )
             print( '-c                   : creating subfolders for each image [./{}/FILENAME/]'.format(settings["outputDirectory"]) )
             print( '-d                   : show debug output' )
             print( '' )
@@ -108,10 +107,10 @@ def processArguments():
     if settings["slice_image"]:
         if col_changed and not row_changed:
             settings["row_count"] = settings["col_count"]
-            print( 'changed amount of slices in y direction also to ' + str( settings["row_count"] ) )
+            print( 'changed amount of slices in y direction also to {}'.format(settings["row_count"]) )
         elif row_changed and not col_changed:
             settings["col_count"] = settings["row_count"]
-            print( 'changed amount of slices in x direction also to ' + str( settings["col_count"] ) )
+            print( 'changed amount of slices in x direction also to {}'.format(settings["col_count"]) )
     print( '' )
     return settings
 
@@ -169,7 +168,7 @@ class phaseContent():
     CSV_appendix = '_box_count_intermediate.csv'
 
     image_count = 0
-    tile_with = 0
+    tile_width = 0
     tile_height = 0
 
     # maximum image count in the sample
@@ -213,15 +212,15 @@ class phaseContent():
         plt.show()
 
     def check_tile_dimension(self, height, width):
-        if self.tile_with + self.tile_height == 0:
-            self.tile_with = width
+        if self.tile_width + self.tile_height == 0:
+            self.tile_width = width
             self.tile_height = height
             return True
         else:
-            if self.tile_with == width and self.tile_height == height:
+            if self.tile_width == width and self.tile_height == height:
                 return True
             else:
-                print( 'Tile sizes do not match! (w: {} != {} | h: {} != {})'.format(width, self.tile_with, height, self.tile_height) )
+                print( 'Tile sizes do not match! (w: {} != {} | h: {} != {})'.format(width, self.tile_width, height, self.tile_height) )
                 sys.exit()
         return False
 
@@ -287,6 +286,7 @@ class phaseContent():
         if verbose: print('reading CSV "{}.csv"'.format(os.path.splitext(os.path.basename(filepath))[0]))
         self.phase_content_DF = pd.read_csv(filepath, encoding='utf-8')
         self.phase_content_DF.fillna(0, inplace=True)
+        self.check_tile_dimension(self.phase_content_DF['height'][1], self.phase_content_DF['width'][1])
 
     def reprocess_mean_and_stdev(self, repeat_sampling=None, verbose=True):
         if repeat_sampling == None: repeat_sampling = self.repeat_sampling
