@@ -17,18 +17,9 @@ import random
 import matplotlib
 import matplotlib.pyplot as plt
 
-home_dir = os.path.dirname(os.path.realpath(__file__))
-
-rsb_file = 'image_slicer'
-rsb_path = os.path.dirname( home_dir ) + os.sep + 'image_slicer' + os.sep
-if ( os.path.isdir( rsb_path ) and os.path.isfile( rsb_path +rsb_file + '.py' ) or os.path.isfile( home_dir + rsb_file + '.py' ) ):
-    if ( os.path.isdir( rsb_path ) ): sys.path.insert( 1, rsb_path )
-    import image_slicer
-else:
-    programInfo()
-    print( 'missing ' + rsb_path + rsb_file + '.py!' )
-    print( 'download from https://github.com/kleinerELM/image_slicer' )
-    sys.exit()
+#remove root windows
+root = tk.Tk()
+root.withdraw()
 
 def programInfo():
     print("#########################################################")
@@ -42,16 +33,48 @@ def programInfo():
     print("#########################################################")
     print()
 
-#### process given command line arguments
-def processArguments():
+home_dir = os.path.dirname(os.path.realpath(__file__))
+
+rsb_file = 'image_slicer'
+rsb_path = os.path.dirname( home_dir ) + os.sep + 'image_slicer' + os.sep
+if ( os.path.isdir( rsb_path ) and os.path.isfile( rsb_path +rsb_file + '.py' ) or os.path.isfile( home_dir + rsb_file + '.py' ) ):
+    if ( os.path.isdir( rsb_path ) ): sys.path.insert( 1, rsb_path )
+    import image_slicer
+else:
+    programInfo()
+    print( 'missing ' + rsb_path + rsb_file + '.py!' )
+    print( 'download from https://github.com/kleinerELM/image_slicer' )
+    sys.exit()
+    
+ts_path = os.path.dirname( home_dir ) + os.sep + 'tiff_scaling' + os.sep
+ts_file = 'set_tiff_scaling'
+if ( os.path.isdir( ts_path ) and os.path.isfile( ts_path + ts_file + '.py' ) or os.path.isfile( home_dir + ts_file + '.py' ) ):
+    if ( os.path.isdir( ts_path ) ): sys.path.insert( 1, ts_path )
+    import extract_tiff_scaling as es
+else:
+    programInfo()
+    print( 'missing ' + ts_path + ts_file + '.py!' )
+    print( 'download from https://github.com/kleinerELM/tiff_scaling' )
+    sys.exit()
+
+def getBaseSettings():
     settings = image_slicer.getBaseSettings()
     settings['slice_image'] = False
     settings["col_count"] = 10
     settings["row_count"] = 10
+    settings["createFolderPerImage"] = True
+    settings["outputDirectory"] = ''
+    return settings
+
+#### process given command line arguments
+def processArguments():
+    settings = getBaseSettings()
+    col_changed = False
+    row_changed = False
     argv = sys.argv[1:]
-    usage = sys.argv[0] + " [-h] [-x] [-y] [-d]"
+    usage = sys.argv[0] + " [-h] [-x] [-y] [-s] [-c] [-d]"
     try:
-        opts, args = getopt.getopt(argv,"hcx:y:d",[])
+        opts, args = getopt.getopt(argv,"hcx:y:sd",[])
     except getopt.GetoptError:
         print( usage )
     for opt, arg in opts:
@@ -61,14 +84,11 @@ def processArguments():
             print( '-s                   : slice the image [OFF]' )
             print( '-x,                  : amount of slices in x direction [{}]'.format(settings["col_count"]) )
             print( '-y,                  : amount of slices in y direction [{}]'.format(settings["row_count"]) )
-            print( '-o,                  : setting output directory name [{}]'.format(settings["outputDirName"]) )
-            print( '-c                   : creating subfolders for each image [./{}/FILENAME/]'.format(settings["outputDirName"]) )
+            #print( '-o,                  : setting output directory name [{}]'.format(settings["outputDirectory"]) )
+            print( '-c                   : creating subfolders for each image [./{}/FILENAME/]'.format(settings["outputDirectory"]) )
             print( '-d                   : show debug output' )
             print( '' )
             sys.exit()
-        elif opt in ("-o"):
-            settings["outputDirName"] = arg
-            print( 'changed output directory to ' + settings["outputDirName"] )
         elif opt in ("-c"):
             settings["createFolderPerImage"] = True
             print( 'creating subfolders for images' )
@@ -95,6 +115,42 @@ def processArguments():
     print( '' )
     return settings
 
+def getFolderScaling(directory):
+    scaling = image_slicer.getEmptyScaling()
+    for filename in os.listdir( directory ):
+        if ( filename.endswith( ".tif" ) ):
+            scaling = es.autodetectScaling( filename, directory )
+            break
+    return scaling
+
+def singeFileProcess(settings=None, x=10, y=10, verbose=False):
+    if settings == None: 
+        settings = getBaseSettings()
+        settings["col_count"] = x
+        settings["row_count"] = y
+    print( "Please select the directory with the source image tiles.", end="\r" )
+    filepath = filedialog.askopenfilename( title='Please select the reference image', filetypes=[("Tiff images", "*.tif;*.tiff")] )
+    settings["workingDirectory"] = os.path.dirname( filepath )
+    file_name, file_extension = os.path.splitext( filepath )
+    file_name = os.path.basename(file_name)
+
+    scaling = image_slicer.sliceImage( settings, file_name, file_extension )#, verbose=settings["showDebuggingOutput"] )
+
+    settings["workingDirectory"] = settings["workingDirectory"] + os.sep + file_name
+    return phaseContent(settings["workingDirectory"], scaling=scaling, verbose=verbose)
+
+def folderProcess(verbose=False):
+    print( "Please select the directory with the source image tiles.", end="\r" )
+    working_directory = filedialog.askdirectory(title='Please select the working directory')
+    print( " "*60, end="\r" )
+    
+    # try to get the scaling from the fist file in the folder
+    scaling = getFolderScaling( working_directory )
+
+    print('start processing Files in "{}"...'.format(working_directory))
+
+    return phaseContent(working_directory, scaling=scaling, verbose=verbose)
+
 class phaseContent():
     # colors used in the example file
     red = np.array((255,118,198), dtype = "uint8")
@@ -109,19 +165,26 @@ class phaseContent():
     # list of columns within the main dataframe excluding phase contents
     column_list = ['filename' , 'height', 'width' ]
 
+    # file name of the CSV
+    CSV_appendix = '_box_count_intermediate.csv'
+
     image_count = 0
     tile_with = 0
     tile_height = 0
 
-    #
+    # maximum image count in the sample
     image_shuffle_count = 100
-    stdev_shuffle_count = 75
+
+    # standard experiment repeats
+    repeat_sampling = 75
     
     stDev_mean = {}
     stDev_stDev = {}
     
     # dataframes
     phase_content_DF = None
+
+    scaling = es.getEmptyScaling()
 
     def init_phase_list(self, phase_list):
         if phase_list is not None: 
@@ -192,21 +255,41 @@ class phaseContent():
             self.phase_content_DF = self.phase_content_DF.append(new_row, ignore_index=True)
             if showMasks: self.show_masked_phases(img, mask_list)
 
-    def load_files(self, folder):
-        print('Checking files in the directory')
-        for file in os.listdir(folder):
-            if ( file.endswith( ".tif" ) ):
-                if self.image_count > 0 and self.image_count % 10 == 0: 
-                    print('processing file #{:02d} of {:02d}'.format( self.image_count, self.image_count ))#, end='')
-                    
-                img = cv2.imread( folder + os.sep + file, cv2.IMREAD_COLOR )
-                self.read_dataset( img, file )
-                
-                self.image_count += 1
-        print('Found {} images'.format(self.image_count))
-        self.phase_content_DF.to_csv( folder+'box_count_intermediate.csv' )
+    def load_files(self, folder, verbose=False):
+        CSVfilepath = folder + self.CSV_appendix
+        if not os.path.isfile( CSVfilepath ):
+            if verbose: print('Checking files in the directory')
+            # count files
+            for file in os.listdir(folder):
+                if ( file.endswith( ".tif" ) ):
+                    self.image_count += 1
+            pos = 0
+            for file in os.listdir(folder):
+                if ( file.endswith( ".tif" ) ):
+                    pos += 1
+                    if pos % 10 == 0: 
+                        if verbose: print('processing file #{:02d} of {:02d}'.format( pos, self.image_count ))#, end='')
+                        
+                    img = cv2.imread( folder + os.sep + file, cv2.IMREAD_COLOR )
+                    self.read_dataset( img, file )
+            
+            self.saveToCSV( CSVfilepath, verbose=verbose )
+        else:
+            self.loadCSV( CSVfilepath, verbose=verbose )
+            self.image_count = len(self.phase_content_DF)
+        if verbose: print('Loaded {} images'.format(self.image_count))
 
-    def reprocess_mean_and_stdev(self, repeat_sampling=75, verbose=True):
+    def saveToCSV(self, CSVfilepath, verbose=False):
+        self.phase_content_DF.to_csv( CSVfilepath, index=False )
+        if verbose: print('Phase analysis saved to {}'.format(CSVfilepath))
+
+    def loadCSV(self, filepath=None, verbose=False):
+        if verbose: print('reading CSV "{}.csv"'.format(os.path.splitext(os.path.basename(filepath))[0]))
+        self.phase_content_DF = pd.read_csv(filepath, encoding='utf-8')
+        self.phase_content_DF.fillna(0, inplace=True)
+
+    def reprocess_mean_and_stdev(self, repeat_sampling=None, verbose=True):
+        if repeat_sampling == None: repeat_sampling = self.repeat_sampling
         # main process 
         if ( self.image_count > 1 ):
             # calculate stabw
@@ -217,7 +300,7 @@ class phaseContent():
             self.stDevcols = list(range(self.image_shuffle_count-2))
             self.phase_mean = {}
 
-            if verbose: print( 'process {} experiments'.format(repeat_sampling))
+            if verbose: print( 'processing {} experiments'.format(repeat_sampling))
 
             # randomly select images (different image amount from 0 to image_shuffle_count)
             # and process the mean phase area for each phase
@@ -253,22 +336,22 @@ class phaseContent():
         else:
             print( "not enough images found!" )
 
-
-    def __init__(self, folder, phase_list=None, phase_names=None ):
+    def __init__(self, folder, phase_list=None, phase_names=None, scaling=None, verbose=False ):
         self.folder = folder
         self.target_folder = os.path.abspath(os.path.join(self.folder, os.pardir))
         self.init_phase_list(phase_list)
         self.init_column_list()
-
+        if not scaling == None:
+            self.scaling = scaling
         self.phase_content_DF = pd.DataFrame(columns = self.column_list)
 
-        self.load_files(folder)
+        self.load_files(folder,verbose=verbose)
 
         # make shure the image_shuffle_count does not exceed the image count!
         if self.image_shuffle_count > self.image_count:
             self.image_shuffle_count = self.image_count
 
-        self.reprocess_mean_and_stdev(self.stdev_shuffle_count)
+        self.reprocess_mean_and_stdev(verbose=verbose)
 
 
 ### actual program start
@@ -284,29 +367,14 @@ if __name__ == '__main__':
     }
 
     programInfo()
-    settings = processArguments( settings )
-
-    if ( settings["showDebuggingOutput"] ) : 
-        print( 'Found {} CPU cores. Using max. {} processes at once.'.format(settings["coreCount"], settings["processCount"]) )
+    settings = processArguments()
+    if settings["showDebuggingOutput"]: 
+        print( 'Found {} CPU cores. Using max. {} processes at once.'.format(mc_settings["coreCount"], mc_settings["processCount"]) )
         print( "I am living in '" + settings["home_dir"] + "'" )
-        print( "Selected working directory: " + settings["workingDirectory"], end='\n\n' )
 
     if settings["slice_image"]:
-        settings["filepath"] = filedialog.askopenfilename( title='Please select the reference image', filetypes=[("Tiff images", "*.tif;*.tiff")] )
-        settings["workingDirectory"] = os.path.dirname( settings["filepath"] )
-        scaling = image_slicer.sliceImage( settings, settings["filepath"] )
+        phaseContent = singeFileProcess(settings, verbose=settings["showDebuggingOutput"])
     else:
-        print( "Please select the directory with the source image tiles.", end="\r" )
-        settings["workingDirectory"] = filedialog.askdirectory(title='Please select the working directory')
-        print( " "*60, end="\r" )
-
-
-    fileList = []
-    if os.path.isdir( settings["workingDirectory"] ):
-        settings["outputDirectory"] = settings["workingDirectory"] + os.sep + settings["outputDirName"] + os.sep
-        if not os.path.exists( settings["outputDirectory"] ):
-            os.makedirs( settings["outputDirectory"] )
-
-    phaseContent = phaseContent(settings["workingDirectory"])
+        phaseContent = folderProcess(verbose=settings["showDebuggingOutput"])
     
     print( "Script DONE!" )
