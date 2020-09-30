@@ -150,6 +150,9 @@ def folderProcess(verbose=False):
 
     return phaseContent(working_directory, scaling=scaling, verbose=verbose)
 
+class chordLengthDistribution():
+    pass
+
 class phaseContent():
     # colors used in the example file
     red = np.array((255,118,198), dtype = "uint8")
@@ -380,10 +383,6 @@ class phaseContent():
 
 ### actual program start
 if __name__ == '__main__':
-    #remove root windows
-    root = tk.Tk()
-    root.withdraw()
-
     coreCount = multiprocessing.cpu_count()
     mc_settings = {
         "coreCount" : multiprocessing.cpu_count(),
@@ -394,7 +393,7 @@ if __name__ == '__main__':
     settings = processArguments()
     if settings["showDebuggingOutput"]: 
         print( 'Found {} CPU cores. Using max. {} processes at once.'.format(mc_settings["coreCount"], mc_settings["processCount"]) )
-        print( "I am living in '" + settings["home_dir"] + "'" )
+        print( "I am living in '{}'".format(settings["home_dir"]) )
 
     if settings["slice_image"]:
         phaseContent = singeFileProcess(settings, verbose=settings["showDebuggingOutput"])
