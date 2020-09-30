@@ -45,7 +45,7 @@ else:
     print( 'missing ' + rsb_path + rsb_file + '.py!' )
     print( 'download from https://github.com/kleinerELM/image_slicer' )
     sys.exit()
-    
+
 ts_path = os.path.dirname( home_dir ) + os.sep + 'tiff_scaling' + os.sep
 ts_file = 'set_tiff_scaling'
 if ( os.path.isdir( ts_path ) and os.path.isfile( ts_path + ts_file + '.py' ) or os.path.isfile( home_dir + ts_file + '.py' ) ):
@@ -184,6 +184,30 @@ class phaseContent():
     phase_content_DF = None
 
     scaling = es.getEmptyScaling()
+
+    def make_area_readable(self, value, unit, decimal = 0):
+        if unit != 'px':
+            u = es.unit()
+            return u.make_area_readable(value, unit, decimal)
+        else:
+            return value, unit
+
+    def get_tile_area(self, readable=True, in_unit='auto', decimal=0):
+        area = self.tile_width * self.tile_height * self.scaling['x']**2
+        unit = self.scaling['unit']
+        if in_unit == 'auto':
+            if readable: area, unit = self.make_area_readable(area, unit, decimal)
+        else:
+            u = es.unit()
+            area = u.get_area_in_unit( area, self.scaling['unit'], in_unit )
+            unit = in_unit
+        return area, unit
+
+    def get_dataset_area(self, decimal = 0):
+        area, unit = self.get_tile_area( False )
+        area = area * self.image_count
+        area, unit = self.make_area_readable(area, unit, decimal)
+        return area, unit
 
     def init_phase_list(self, phase_list):
         if phase_list is not None: 
