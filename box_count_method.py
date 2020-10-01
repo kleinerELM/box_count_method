@@ -1,18 +1,13 @@
 # -*- coding: utf-8 -*-
-import csv
 import os, sys, getopt
-import tifffile as tiff
 import tkinter as tk
 from tkinter import filedialog
 import math
 import cv2
 import numpy as np
-import random
-import time
 import multiprocessing
 import pandas as pd
-import statistics 
-import random
+import statistics
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -265,7 +260,7 @@ class phaseContent():
 
     def read_dataset( self, img, file, showMasks = False ):
         height, width = img.shape[:2]
-        if self.check_tile_dimension(height, width):            
+        if self.check_tile_dimension(height, width):
             new_row = {'filename':file, 'height':height, 'width':width }
             
             mask_list = []
@@ -332,7 +327,7 @@ class phaseContent():
             # randomly select images (different image amount from 0 to image_shuffle_count)
             # and process the mean phase area for each phase
             
-            # für jede Phase
+            # for every phase
             for i in range(self.phase_count):
                 key = keyName.format(i)
                 # create headers for each phase
@@ -343,7 +338,7 @@ class phaseContent():
 
                 if verbose: print( 'mean & std deviation of {}'.format(self.phase_names[i]) )
                 self.meanAfterNExperiments[key] = {}
-                # für eine Samplegröße von 0 bis self.image_shuffle_count (100) Bildern
+                # for a sample size from 0 to self.image_shuffle_count (100) images
                 for c in range(1, self.image_shuffle_count+1):
                     
                     #if c > 0 and c % 10 == 0: 
@@ -351,7 +346,7 @@ class phaseContent():
 
                     self.meanAfterNExperiments[key][c] = []
                     sampleFraction = c/self.image_count
-                    # wiederholungen
+                    # repeat the experiments 'repeat_sampling' times
                     for j in range( repeat_sampling ):
                         sampleDF = self.phase_content_DF.sample(frac=sampleFraction)
                         self.meanAfterNExperiments[key][c].append( sampleDF[key].mean(skipna = True) )
@@ -374,7 +369,7 @@ class phaseContent():
 
         self.load_files(folder,verbose=verbose)
 
-        # make shure the image_shuffle_count does not exceed the image count!
+        # make sure the image_shuffle_count does not exceed the image count!
         if self.image_shuffle_count > self.image_count:
             self.image_shuffle_count = self.image_count
 
