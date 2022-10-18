@@ -1,0 +1,11 @@
+# requirements.
+tifffile
+numpy
+pillow
+multiprocess
+jupyter
+opencv-python
+matplot
+napari[pyqt5]
+pandas
+
