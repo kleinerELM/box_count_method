@@ -1,16 +1,13 @@
 # -*- coding: utf-8 -*-
-import os, sys, getopt
+import os, sys, getopt, math,cv2, multiprocessing, statistics
 import tkinter as tk
 from tkinter import filedialog
-import math
-import cv2
 import numpy as np
-import multiprocessing
 import pandas as pd
-import statistics
 
-import matplotlib
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+from skimage import exposure
 
 #remove root windows
 root = tk.Tk()
@@ -18,10 +15,10 @@ root.withdraw()
 
 def programInfo():
     print("#########################################################")
-    print("# Automatically stich a random image from otherwise     #")
-    print("# generated TIFF tiles.                                 #")
+    print("# get statistical information if an image is large      #")
+    print("# enough to measure the phase content.                  #")
     print("#                                                       #")
-    print("# © 2020 Florian Kleiner                                #")
+    print("# © 2024 Florian Kleiner                                #")
     print("#   Bauhaus-Universität Weimar                          #")
     print("#   Finger-Institut für Baustoffkunde                   #")
     print("#                                                       #")
@@ -42,7 +39,7 @@ else:
     sys.exit()
 
 ts_path = os.path.dirname( home_dir ) + os.sep + 'tiff_scaling' + os.sep
-ts_file = 'set_tiff_scaling'
+ts_file = 'extract_tiff_scaling'
 if ( os.path.isdir( ts_path ) and os.path.isfile( ts_path + ts_file + '.py' ) or os.path.isfile( home_dir + ts_file + '.py' ) ):
     if ( os.path.isdir( ts_path ) ): sys.path.insert( 1, ts_path )
     import extract_tiff_scaling as es
@@ -109,7 +106,7 @@ def processArguments():
     print( '' )
     return settings
 
-def getFolderScaling(directory):
+""" def getFolderScaling(directory):
     scaling = image_slicer.getEmptyScaling()
     for filename in os.listdir( directory ):
         if ( filename.endswith( ".tif" ) ):
@@ -143,21 +140,225 @@ def folderProcess(verbose=False):
 
     print('start processing Files in "{}"...'.format(working_directory))
 
-    return phaseContent(working_directory, scaling=scaling, verbose=verbose)
+    return phaseContent(working_directory, scaling=scaling, verbose=verbose) """
 
+
+def sliceImage( filepath, file_name, image, row_cnt, col_cnt, overwrite_existing = False, show_result = False ):
+    height = image.shape[0]
+    width = image.shape[1]
+
+    #cropping width / height
+    crop_height = int(height/row_cnt)
+    crop_width  = int( width/col_cnt)
+
+    slice_name = "{}_{:04d}_{:04d}.tif"
+    targetDirectory = filepath + os.path.sep + file_name
+    if not os.path.isdir(targetDirectory): os.mkdir(targetDirectory)
+    
+    slices_already_exists = True
+    if not overwrite_existing:
+        for i in range(row_cnt): # start at i = 0 to row_count-1
+            for j in range(col_cnt): # start at j = 0 to col_count-1
+                fileij = slice_name.format(file_name, i, j)
+                if not os.path.isfile( targetDirectory + fileij ):
+                    slices_already_exists = False
+    else:
+        slices_already_exists = False
+
+    if slices_already_exists:
+        print("  The expected sliced images already exist! Doing nothing...")
+    else:
+        for i in range(row_cnt): # start at i = 0 to row_count-1
+            print( "   - " + fileij )
+            for j in range(col_cnt): # start at j = 0 to col_count-1
+                fileij = slice_name.format(file_name, i,j)
+                cropped_filename = targetDirectory + os.path.sep + fileij
+
+                image[i*crop_height: (i+1)*crop_height,
+                      j*crop_width : (j+1)*crop_width  ]
+                cv2.imwrite( cropped_filename, image[i*crop_height: (i+1)*crop_height, j*crop_width : (j+1)*crop_width ], params=(cv2.IMWRITE_TIFF_COMPRESSION, 5) )
+                
+    if show_result:
+        fig, ax = plt.subplots( 1, 1, figsize = ( 18, 5 ) )
+
+        img = ax.imshow( image,	 cmap='gist_rainbow' )
+        for pos in range(col_cnt):
+            ax.axvline(pos*crop_height, 0, 1, color='white')
+        for pos in range(row_cnt):
+            ax.axhline(pos*crop_width, 0, 1, color='white')
+
+        #colors = [ img.cmap(img.norm(i)) for i in range(len(t_labels))]
+        # create a patch (proxy artist) for every color 
+        #patches = [ mpatches.Patch(color=colors[i], label=t_labels[i] ) for i in range(len(t_labels)) ]
+        # put those patched as legend-handles into the legend
+        #plt.legend(handles=patches, bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0. )
+        plt.show()
+        
+    return targetDirectory
+        
+class image_loader():
+    image = {
+        'raw' : None,
+        'enh' : None,
+        'nlm' : None,
+        'seg' : None
+    }
+    filename = {
+        'raw' : '{}',
+        'enh' : '{}_enh',
+        'nlm' : '{}_nlm',
+        'seg' : '{}_seg'
+    }
+    scaling = es.getEmptyScaling()
+    empty_scaling = scaling
+    
+    def enhance_image( self ):
+        if self.image['enh'] is None:
+            if self.verbose: print( "  Enhancing image contrast" )
+            self.image['enh'] = exposure.adjust_log( self.image['raw'] )
+            ## it the histogram enhacement is fast and the saved file is usually larger than the raw image - there is not really a point saving that intermediary image
+            #if self.save_intermediates: 
+            #    cv2.imwrite( self.path + self.filename['enh'] + '.tif', self.image['enh'], params=(cv2.IMWRITE_TIFF_COMPRESSION, 5) )
+    
+    def denoise_NLMCV2( self, h=15, templateWindowSize=7, searchWindowSize=23 ):
+        if self.image['nlm'] is None:
+            if self.verbose: print( "  Denoising image using Non Local Means" )
+            self.image['nlm'] = np.zeros(self.image['enh'].shape, np.uint8) # empty image
+            cv2.fastNlMeansDenoising( self.image['enh'], self.image['nlm'], float( h ), templateWindowSize, searchWindowSize )
+            if self.save_intermediates: 
+                cv2.imwrite( self.path + self.filename['nlm'] + '.tif', self.image['nlm'], params=(cv2.IMWRITE_TIFF_COMPRESSION, 5) )
+        
+   
+    def threshold_segmentation( self ):
+        """
+        Divide two numbers.
+
+        Parameters
+        ----------
+        thresh_values : dict
+            dictionary containing threshold values at which a phase starts, eg: {  0: 'pores', 125: 'CSH', 167: 'CH', 198: 'alite' }
+        show_result : boolean
+            toggle to output the histogram and the segmentation result
+        save : boolean
+            toggle to save the resulting mask
+        
+        Returns
+        -------
+        np.typing.NDArray[np.uint8]
+            The resulting mask image, where each phase is represented by an integer value from 0 to n (n=phase count -1)
+        """
+        if self.image['seg'] is None:
+            self.image['seg'] = np.zeros((self.image['nlm'].shape[0],self.image['nlm'].shape[1]), np.uint8)
+            i = 0
+            pixel_count = self.image['nlm'].shape[0]*self.image['nlm'].shape[1]
+            for thresh_value, label in self.thresh_values.items():
+                if self.verbose: print('  {}; range: {}-{}, value: {}'.format(label, thresh_value, self.t_keys[i+1], i))
+                if thresh_value > 0:
+                    _, phase_mask = cv2.threshold(self.image['nlm'], thresh_value, 1, cv2.THRESH_BINARY)
+                    self.image['seg'] += phase_mask
+                i+=1
+
+        counts, _  = np.histogram(self.image['seg'].ravel(), bins=range(len(self.t_keys)), density=True)
+        print("\nArea proportions:")
+        for i, c in enumerate(counts):
+            print('  {}: {:.2f}%'.format(self.phase_labels[i], c*100))
+
+        if self.verbose:
+            fig, ax = plt.subplots( 1, 3, figsize = ( 18, 5 ) )
+            if not self.image['nlm'] is False and not self.image['nlm'] is None:
+                i = 0
+                ax[i].imshow( self.image['nlm'],	 cmap='grey' )
+                
+                i = 1
+
+                for thresh_value in self.thresh_values.keys():
+                    ax[i].axvline(thresh_value, 0, pixel_count, color='red')
+                ax[i].hist(self.image['nlm'].ravel(),255,[0,255])
+                ax[i].set_xlim([0,255])
+                ax[i].set_yticks( [], [] )
+                ax[i].set_xlabel( "grey value" )
+                ax[i].set_ylabel( "frequency" )
+
+            i = 2
+            img = ax[i].imshow( self.image['seg'],	 cmap='gist_rainbow' )
+
+            colors = [ img.cmap(img.norm(i)) for i in range(len(self.phase_labels))]
+            # create a patch (proxy artist) for every color 
+            patches = [ mpatches.Patch(color=colors[i], label=self.phase_labels[i] ) for i in range(len(self.phase_labels)) ]
+            # put those patched as legend-handles into the legend
+            plt.legend(handles=patches, bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0. )
+            plt.show()
+
+        if self.save_intermediates:
+            cv2.imwrite( self.path + self.filename['seg'] + '.tif', self.image['seg'], params=(cv2.IMWRITE_TIFF_COMPRESSION, 5) )
+    
+    def load_image( self, force_reprocess = False ):
+        image_loaded = False
+        # populate filename dict
+        for key, fn in self.filename.items():
+            self.filename[key] = fn.format(self.file_name )
+        #load images
+        for key, fn in reversed(list(self.filename.items())):
+            file_path = self.path + self.filename[key] + self.file_extension
+            if image_loaded:
+                self.image[key] = False
+                print('avoid loading {}'.format(self.filename[key] + self.file_extension))
+            elif os.path.exists( file_path ):
+                print('loading {}'.format(self.filename[key] + self.file_extension))
+                self.image[key] = cv2.imread( file_path, cv2.IMREAD_GRAYSCALE )
+                self.scaling = es.autodetectScaling( self.filename['raw'] + self.file_extension, self.path )
+                image_loaded = True
+                
+        return image_loaded
+        
+    
+    def __init__(self, filepath, thresh_values, save_intermediates = True, force_reprocess = False, verbose = False ):
+        """
+        Initiate class image_loader
+
+        Parameters
+        ----------
+        filepath : string
+            full path to the raw image file
+        scaling : dict
+            dictionary containing the scaling
+        force_reprocess : boolean
+            force reprocess every step
+        
+        Returns
+        -------
+        image_loader object
+        """
+        self.thresh_values = thresh_values
+        self.phase_labels = list( thresh_values.values() )
+        self.t_keys = list( thresh_values.keys() )
+        self.t_keys.append(255)
+        self.save_intermediates = save_intermediates
+        self.verbose = verbose
+        
+        self.path = os.path.dirname( filepath ) + os.path.sep
+        print(filepath, self.path)
+        self.file_name, self.file_extension = os.path.splitext( filepath )
+        self.file_name = os.path.basename(self.file_name)
+        if self.load_image( force_reprocess ):
+            self.enhance_image()
+            self.denoise_NLMCV2( h=18 )
+            self.threshold_segmentation()
+        
+            
 class chordLengthDistribution():
     pass
 
 class phaseContent():
     # colors used in the example file
-    red = np.array((255,118,198), dtype = "uint8")
-    green = np.array((130,255,79), dtype = "uint8")
-    blue = np.array((0,0,255), dtype = "uint8")
+    #red   = np.array((255,118,198), dtype = "uint8")
+    #green = np.array((130,255, 79), dtype = "uint8")
+    #blue  = np.array((  0,  0,255), dtype = "uint8")
 
     # list of phases
-    phase_list = [red,green,blue]
-    phase_names = ['resin/pores', 'C-S-H', 'C₃S']
-    phase_count = 3
+    phase_colors = [0,1,2]
+    phase_names  = ['resin/pores', 'C-S-H', 'C₃S']
+    phase_count  = len(phase_names)
 
     # list of columns within the main dataframe excluding phase contents
     column_list = ['filename' , 'height', 'width' ]
@@ -207,29 +408,26 @@ class phaseContent():
         area, unit = self.make_area_readable(area, unit, decimal)
         return area, unit
 
-    def init_phase_list(self, phase_list):
-        if phase_list is not None: 
-            self.phase_list = phase_list
-            self.phase_count = len(self.phase_list)
+    def init_phase_list(self, phase_names ):
+        if phase_names is not None:
+            self.phase_names  = phase_names
+            self.phase_count  = len(phase_names)
+            self.phase_colors = range(self.phase_count)
 
     def init_column_list(self):
-        i = 0
-        for phase in self.phase_list:
+        for i in range(len(self.phase_names)):
             self.column_list.append( 'phase_{:02d}'.format(i) )
             self.column_list.append( 'phase_{:02d}_percent'.format(i) )
-            i +=1
 
     def show_masked_phases(self, img, mask_list):
         plot_count = len(self.phase_list) + 1
         plot_column_count = math.ceil(plot_count/2)
         plot_pos = 1
-        mask_index = 0
         plt.subplot(2,plot_column_count,plot_pos),plt.imshow(img)
-        for phase in self.phase_list:
+        for mask_index in range(self.phase_count):
             plot_pos += 1
 
             plt.subplot(2,plot_column_count,plot_pos),plt.imshow(mask_list[mask_index])
-            mask_index +=1
 
         plt.show()
 
@@ -258,23 +456,27 @@ class phaseContent():
             #    print(i, len(experiment_list[:i]))
         return stdDevRow
 
-    def read_dataset( self, img, file, showMasks = False ):
+    def read_dataset( self, img, file ):
         height, width = img.shape[:2]
+        px_cnt = height*width
         if self.check_tile_dimension(height, width):
             new_row = {'filename':file, 'height':height, 'width':width }
             
-            mask_list = []
+            #mask_list = []            
+            counts = np.bincount(img.ravel()) # much faster (like 3x) than: colors, counts = np.unique(img.ravel(), return_counts=True)
+            #counts /= px_cnt
+            percentages = counts * 100 /px_cnt#dict(zip(self.phase_colors, counts * 100 /px_cnt ))
+            
+            for color, percentage in enumerate(percentages):# self.phase_names:
+                label = 'phase_{:02d}'.format(color)
+                #mask_list.append( cv2.inRange(img, phase, phase) )
 
-            mask_index = 0
-            for phase in self.phase_list:
-                mask_list.append( cv2.inRange(img, phase, phase) )
+                new_row[label] = counts[color]#cv2.countNonZero( mask_list[mask_index] )
+                new_row[label + '_percent'] = percentage#new_row[label]/(height*width)*100
 
-                new_row['phase_{:02d}'.format(mask_index)] = cv2.countNonZero( mask_list[mask_index] )
-                new_row['phase_{:02d}_percent'.format(mask_index)] = new_row['phase_{:02d}'.format(mask_index)]/(height*width)*100
-                mask_index +=1
-
-            self.phase_content_DF = self.phase_content_DF.append(new_row, ignore_index=True)
-            if showMasks: self.show_masked_phases(img, mask_list)
+            #self.phase_content_DF = self.phase_content_DF.append(new_row, ignore_index=True)
+            self.phase_content_DF = pd.concat([self.phase_content_DF, pd.DataFrame([new_row])], ignore_index=True)
+            #if showMasks: self.show_masked_phases(img, mask_list)
 
     def load_files(self, folder, verbose=False):
         CSVfilepath = folder + self.CSV_appendix
@@ -291,7 +493,7 @@ class phaseContent():
                     if pos % 10 == 0: 
                         if verbose: print('processing file #{:02d} of {:02d}'.format( pos, self.image_count ))#, end='')
                         
-                    img = cv2.imread( folder + os.sep + file, cv2.IMREAD_COLOR )
+                    img = cv2.imread( folder + os.sep + file, cv2.IMREAD_GRAYSCALE )
                     self.read_dataset( img, file )
             
             self.saveToCSV( CSVfilepath, verbose=verbose )
@@ -351,6 +553,7 @@ class phaseContent():
                         sampleDF = self.phase_content_DF.sample(frac=sampleFraction)
                         self.meanAfterNExperiments[key][c].append( sampleDF[key].mean(skipna = True) )
                     
+                    #print( self.meanAfterNExperiments[key][c] )
                     self.stDev_mean[key].append( statistics.mean( self.meanAfterNExperiments[key][c] ) )
                     self.stDev_stDev[key].append( statistics.stdev( self.meanAfterNExperiments[key][c] ) )
             
@@ -358,13 +561,32 @@ class phaseContent():
         else:
             print( "not enough images found!" )
 
-    def __init__(self, folder, phase_list=None, phase_names=None, scaling=None, verbose=False ):
+    def __init__(self, folder, phase_names, scaling=None, verbose=False ):
+        """
+        Initiate class phaseContent
+
+        Parameters
+        ----------
+        folder : string
+            directory in which the images can be found.
+        phase_names : list
+            eg: [ 'pores', 'CSH', 'CH', 'alite' ]
+        scaling : dict
+            dictionary containing the scaling
+        verbose : boolean
+            endable some more debugging message
+        
+        Returns
+        -------
+        phaseContent object
+        """
         self.folder = folder
         self.target_folder = os.path.abspath(os.path.join(self.folder, os.pardir))
-        self.init_phase_list(phase_list)
+        self.init_phase_list( phase_names )
         self.init_column_list()
         if not scaling == None:
             self.scaling = scaling
+            
         self.phase_content_DF = pd.DataFrame(columns = self.column_list)
 
         self.load_files(folder,verbose=verbose)
@@ -374,7 +596,6 @@ class phaseContent():
             self.image_shuffle_count = self.image_count
 
         self.reprocess_mean_and_stdev(verbose=verbose)
-
 
 ### actual program start
 if __name__ == '__main__':
@@ -390,9 +611,9 @@ if __name__ == '__main__':
         print( 'Found {} CPU cores. Using max. {} processes at once.'.format(mc_settings["coreCount"], mc_settings["processCount"]) )
         print( "I am living in '{}'".format(settings["home_dir"]) )
 
-    if settings["slice_image"]:
-        phaseContent = singeFileProcess(settings, verbose=settings["showDebuggingOutput"])
-    else:
-        phaseContent = folderProcess(verbose=settings["showDebuggingOutput"])
+    # if settings["slice_image"]:
+    #     phaseContent = singeFileProcess(settings, verbose=settings["showDebuggingOutput"])
+    # else:
+    #     phaseContent = folderProcess(verbose=settings["showDebuggingOutput"])
     
     print( "Script DONE!" )
