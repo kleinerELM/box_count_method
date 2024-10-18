@@ -1,13 +1,16 @@
 # -*- coding: utf-8 -*-
-import os, sys, getopt, math,cv2, multiprocessing, statistics
+import os, sys, getopt, math,cv2, multiprocessing, statistics, random, time
 import tkinter as tk
 from tkinter import filedialog
 import numpy as np
 import pandas as pd
+import xarray as xr
 
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
+import matplotlib.patches as patches
 from skimage import exposure
+
+random.seed(time.time())
 
 #remove root windows
 root = tk.Tk()
@@ -106,41 +109,6 @@ def processArguments():
     print( '' )
     return settings
 
-""" def getFolderScaling(directory):
-    scaling = image_slicer.getEmptyScaling()
-    for filename in os.listdir( directory ):
-        if ( filename.endswith( ".tif" ) ):
-            scaling = es.autodetectScaling( filename, directory )
-            break
-    return scaling
-
-def singeFileProcess(settings=None, x=10, y=10, verbose=False):
-    if settings == None: 
-        settings = getBaseSettings()
-        settings["col_count"] = x
-        settings["row_count"] = y
-    print( "Please select the directory with the source image tiles.", end="\r" )
-    filepath = filedialog.askopenfilename( title='Please select the reference image', filetypes=[("Tiff images", "*.tif;*.tiff")] )
-    settings["workingDirectory"] = os.path.dirname( filepath )
-    file_name, file_extension = os.path.splitext( filepath )
-    file_name = os.path.basename(file_name)
-
-    scaling = image_slicer.sliceImage( settings, file_name, file_extension )#, verbose=settings["showDebuggingOutput"] )
-
-    settings["workingDirectory"] = settings["workingDirectory"] + os.sep + file_name
-    return phaseContent(settings["workingDirectory"], scaling=scaling, verbose=verbose)
-
-def folderProcess(verbose=False):
-    print( "Please select the directory with the source image tiles.", end="\r" )
-    working_directory = filedialog.askdirectory(title='Please select the working directory')
-    print( " "*60, end="\r" )
-    
-    # try to get the scaling from the fist file in the folder
-    scaling = getFolderScaling( working_directory )
-
-    print('start processing Files in "{}"...'.format(working_directory))
-
-    return phaseContent(working_directory, scaling=scaling, verbose=verbose) """
 
 
 def sliceImage( filepath, file_name, image, row_cnt, col_cnt, overwrite_existing = False, show_result = False ):
@@ -186,16 +154,62 @@ def sliceImage( filepath, file_name, image, row_cnt, col_cnt, overwrite_existing
             ax.axvline(pos*crop_height, 0, 1, color='white')
         for pos in range(row_cnt):
             ax.axhline(pos*crop_width, 0, 1, color='white')
-
-        #colors = [ img.cmap(img.norm(i)) for i in range(len(t_labels))]
-        # create a patch (proxy artist) for every color 
-        #patches = [ mpatches.Patch(color=colors[i], label=t_labels[i] ) for i in range(len(t_labels)) ]
-        # put those patched as legend-handles into the legend
-        #plt.legend(handles=patches, bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0. )
         plt.show()
         
     return targetDirectory
-        
+
+
+def measure_phase_composition( image, phases=None, verbose = True ):
+    #counts, _  = np.histogram( image.ravel(), bins=range(len(phases)+1), density=True)
+    counts = np.bincount(image.ravel()) / len(image.ravel()) # much faster (like 3x) than: colors, counts = np.unique(img.ravel(),
+    if verbose and not phases is None:
+        print("\nArea proportions:")
+        for i, c in enumerate(counts):
+            print('  {}: {:.2f}%'.format(phases[i], c*100))
+    return counts
+    
+def growImageArea( image, phases, seed_window_f = 5, step_w=5, show_result = False ):
+    height = image.shape[0]
+    width = image.shape[1]
+    
+    #seed_window_f = 5 # Anteil des Bildes im Zentrum, in dem sich die Seed-position bewegen darf
+    f_x = random.random()
+    f_y = random.random()
+    seed_pos_x = int( (width - f_x * width / seed_window_f)/2 )
+    seed_pos_y = int( (height - f_y * height / seed_window_f)/2 )
+    #print(f_x, f_y, seed_pos_x, seed_pos_y)
+    if show_result: 
+        fig, ax = plt.subplots( 1, 1, figsize = ( 18, 5 ) )
+        ax.imshow( image,	 cmap='gist_rainbow' )
+        circ = patches.Circle((seed_pos_x,seed_pos_y),width*.01,edgecolor='white', facecolor='black')
+        ax.add_patch(circ)
+    
+    results = []
+    for f in range(step_w,100,step_w):
+        size = (
+            int( width*f/100 ),
+            int( height*f/100 )
+        )
+        start_pos = (
+            int(seed_pos_x - size[0]/2),
+            int(seed_pos_y - size[1]/2)
+        )
+        # check if rectangle is outside the image area
+        if  ( (start_pos[0]+size[0]) < width and start_pos[0] >= 0) and ( (start_pos[1]+size[1]) < height and start_pos[1] >= 0):
+            results.append(
+                measure_phase_composition( image[start_pos[1] : start_pos[1]+size[1], start_pos[0] : start_pos[0]+size[0]], phases, verbose = (show_result and f%25==0) )
+            )
+            #print(size, start_pos)
+            if show_result and f%10==0:
+                rect = patches.Rectangle(start_pos, size[0], size[1], linewidth=1, edgecolor='white', facecolor='none')
+                ax.add_patch(rect)
+        else: # the rectangle is outside of the image area -> stop
+            break
+            
+    if show_result: plt.show()
+           
+    return pd.DataFrame(results, columns = phases)
+    
 class image_loader():
     image = {
         'raw' : None,
@@ -228,10 +242,9 @@ class image_loader():
             if self.save_intermediates: 
                 cv2.imwrite( self.path + self.filename['nlm'] + '.tif', self.image['nlm'], params=(cv2.IMWRITE_TIFF_COMPRESSION, 5) )
         
-   
     def threshold_segmentation( self ):
         """
-        Divide two numbers.
+        segments the image
 
         Parameters
         ----------
@@ -258,10 +271,7 @@ class image_loader():
                     self.image['seg'] += phase_mask
                 i+=1
 
-        counts, _  = np.histogram(self.image['seg'].ravel(), bins=range(len(self.t_keys)), density=True)
-        print("\nArea proportions:")
-        for i, c in enumerate(counts):
-            print('  {}: {:.2f}%'.format(self.phase_labels[i], c*100))
+        counts = measure_phase_composition(self.image['seg'], self.phase_labels)
 
         if self.verbose:
             fig, ax = plt.subplots( 1, 3, figsize = ( 18, 5 ) )
@@ -284,7 +294,7 @@ class image_loader():
 
             colors = [ img.cmap(img.norm(i)) for i in range(len(self.phase_labels))]
             # create a patch (proxy artist) for every color 
-            patches = [ mpatches.Patch(color=colors[i], label=self.phase_labels[i] ) for i in range(len(self.phase_labels)) ]
+            patches = [ patches.Patch(color=colors[i], label=self.phase_labels[i] ) for i in range(len(self.phase_labels)) ]
             # put those patched as legend-handles into the legend
             plt.legend(handles=patches, bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0. )
             plt.show()
@@ -374,7 +384,7 @@ class phaseContent():
     image_shuffle_count = 100
 
     # standard experiment repeats
-    repeat_sampling = 75
+    experiments = 75
     
     stDev_mean = {}
     stDev_stDev = {}
@@ -462,21 +472,17 @@ class phaseContent():
         if self.check_tile_dimension(height, width):
             new_row = {'filename':file, 'height':height, 'width':width }
             
-            #mask_list = []            
-            counts = np.bincount(img.ravel()) # much faster (like 3x) than: colors, counts = np.unique(img.ravel(), return_counts=True)
-            #counts /= px_cnt
-            percentages = counts * 100 /px_cnt#dict(zip(self.phase_colors, counts * 100 /px_cnt ))
+            phase_comp = measure_phase_composition( img )
+            counts = phase_comp * px_cnt
+            percentages = phase_comp * 100
             
-            for color, percentage in enumerate(percentages):# self.phase_names:
+            for color, percentage in enumerate(percentages):
                 label = 'phase_{:02d}'.format(color)
-                #mask_list.append( cv2.inRange(img, phase, phase) )
 
-                new_row[label] = counts[color]#cv2.countNonZero( mask_list[mask_index] )
-                new_row[label + '_percent'] = percentage#new_row[label]/(height*width)*100
+                new_row[label] = counts[color]
+                new_row[label + '_percent'] = percentage
 
-            #self.phase_content_DF = self.phase_content_DF.append(new_row, ignore_index=True)
             self.phase_content_DF = pd.concat([self.phase_content_DF, pd.DataFrame([new_row])], ignore_index=True)
-            #if showMasks: self.show_masked_phases(img, mask_list)
 
     def load_files(self, folder, verbose=False):
         CSVfilepath = folder + self.CSV_appendix
@@ -512,8 +518,8 @@ class phaseContent():
         self.phase_content_DF.fillna(0, inplace=True)
         self.check_tile_dimension(self.phase_content_DF['height'][1], self.phase_content_DF['width'][1])
 
-    def reprocess_mean_and_stdev(self, repeat_sampling=None, verbose=True):
-        if repeat_sampling == None: repeat_sampling = self.repeat_sampling
+    def box_count_method( self, experiments=None, verbose=True ):
+        if experiments == None: experiments = self.experiments
         # main process 
         if ( self.image_count > 1 ):
             # calculate stabw
@@ -524,7 +530,7 @@ class phaseContent():
             self.stDevcols = list(range(self.image_shuffle_count-2))
             self.phase_mean = {}
 
-            if verbose: print( 'processing {} experiments'.format(repeat_sampling))
+            if verbose: print( 'processing {} experiments'.format(experiments))
 
             # randomly select images (different image amount from 0 to image_shuffle_count)
             # and process the mean phase area for each phase
@@ -548,8 +554,8 @@ class phaseContent():
 
                     self.meanAfterNExperiments[key][c] = []
                     sampleFraction = c/self.image_count
-                    # repeat the experiments 'repeat_sampling' times
-                    for j in range( repeat_sampling ):
+                    # repeat the experiments 'experiments' times
+                    for j in range( experiments ):
                         sampleDF = self.phase_content_DF.sample(frac=sampleFraction)
                         self.meanAfterNExperiments[key][c].append( sampleDF[key].mean(skipna = True) )
                     
@@ -560,6 +566,29 @@ class phaseContent():
             if verbose: print( '-'*20 )
         else:
             print( "not enough images found!" )
+
+    def area_growth_method( self, segmented_image, seed_window_f=5, step_w=5, experiments=None, verbose=True ):
+        if experiments == None: experiments = self.experiments
+        self.agm_result_list=[]
+        min_area_rows = -1
+        for i in range(experiments):
+            self.agm_result_list.append(
+                growImageArea( segmented_image, self.phase_names, seed_window_f = seed_window_f, step_w=step_w, show_result = (verbose and (i==0)) )
+            )
+            area_rows = len(self.agm_result_list[-1])
+            if min_area_rows < 0 or min_area_rows > area_rows: min_area_rows = area_rows
+            if verbose and (i==1 or i%10==0): print("{}% done...".format(i))
+
+
+        # reduce the data size to the lowest common row count
+        result_list_cropped = []
+        for df in self.agm_result_list:
+            result_list_cropped.append( df.head(min_area_rows) )
+
+        # convert to xarray data array for stats
+        da = xr.DataArray(result_list_cropped, dims=["experiment", "area_size", "phase"])
+        return da
+
 
     def __init__(self, folder, phase_names, scaling=None, verbose=False ):
         """
@@ -595,7 +624,7 @@ class phaseContent():
         if self.image_shuffle_count > self.image_count:
             self.image_shuffle_count = self.image_count
 
-        self.reprocess_mean_and_stdev(verbose=verbose)
+        self.box_count_method(verbose=verbose)
 
 ### actual program start
 if __name__ == '__main__':
