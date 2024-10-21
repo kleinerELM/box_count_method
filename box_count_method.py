@@ -111,7 +111,8 @@ def processArguments():
 
 
 
-def sliceImage( filepath, file_name, image, row_cnt, col_cnt, overwrite_existing = False, show_result = False ):
+def sliceImage( filepath, file_name, image, row_cnt, col_cnt, overwrite_existing = False, show_result = False, cmap = None ):
+    if cmap is None: cmap = 'gist_rainbow'
     height = image.shape[0]
     width = image.shape[1]
 
@@ -147,14 +148,16 @@ def sliceImage( filepath, file_name, image, row_cnt, col_cnt, overwrite_existing
                 cv2.imwrite( cropped_filename, image[i*crop_height: (i+1)*crop_height, j*crop_width : (j+1)*crop_width ], params=(cv2.IMWRITE_TIFF_COMPRESSION, 5) )
                 
     if show_result:
-        fig, ax = plt.subplots( 1, 1, figsize = ( 18, 5 ) )
+        fig, ax = plt.subplots( 1, 1, figsize = ( 9, 9 ) )
 
-        img = ax.imshow( image,	 cmap='gist_rainbow' )
+        img = ax.imshow( image,	 cmap=cmap )
+        ax.set_axis_off()
         for pos in range(col_cnt):
             ax.axvline(pos*crop_height, 0, 1, color='white')
         for pos in range(row_cnt):
             ax.axhline(pos*crop_width, 0, 1, color='white')
         plt.show()
+        plt.savefig('box_count_method.svg')
         
     return targetDirectory
 
@@ -168,7 +171,8 @@ def measure_phase_composition( image, phases=None, verbose = True ):
             print('  {}: {:.2f}%'.format(phases[i], c*100))
     return counts
     
-def growImageArea( image, phases, seed_window_f = 5, step_w=5, show_result = False ):
+def growImageArea( image, phases, seed_window_f = 5, step_w=5, show_result = False, cmap=None ):
+    if cmap is None: cmap = 'gist_rainbow' 
     height = image.shape[0]
     width = image.shape[1]
     
@@ -179,11 +183,13 @@ def growImageArea( image, phases, seed_window_f = 5, step_w=5, show_result = Fal
     seed_pos_y = int( (height - f_y * height / seed_window_f)/2 )
     #print(f_x, f_y, seed_pos_x, seed_pos_y)
     if show_result: 
-        fig, ax = plt.subplots( 1, 1, figsize = ( 18, 5 ) )
-        ax.imshow( image,	 cmap='gist_rainbow' )
+        fig, ax = plt.subplots( 1, 1, figsize = ( 9, 9 ) )
+        ax.imshow( image,	 cmap=cmap )
+        ax.set_axis_off()
         circ = patches.Circle((seed_pos_x,seed_pos_y),width*.01,edgecolor='white', facecolor='black')
         ax.add_patch(circ)
-    
+        
+    areas = []
     results = []
     for f in range(step_w,100,step_w):
         size = (
@@ -199,17 +205,27 @@ def growImageArea( image, phases, seed_window_f = 5, step_w=5, show_result = Fal
             results.append(
                 measure_phase_composition( image[start_pos[1] : start_pos[1]+size[1], start_pos[0] : start_pos[0]+size[0]], phases, verbose = (show_result and f%25==0) )
             )
-            #print(size, start_pos)
+            areas.append(size[0]*size[1])
+            
             if show_result and f%10==0:
                 rect = patches.Rectangle(start_pos, size[0], size[1], linewidth=1, edgecolor='white', facecolor='none')
                 ax.add_patch(rect)
         else: # the rectangle is outside of the image area -> stop
             break
             
-    if show_result: plt.show()
+    if show_result: 
+        plt.show()
+        plt.savefig('box_growth_method.svg')
            
-    return pd.DataFrame(results, columns = phases)
-    
+    return pd.DataFrame(results, columns = phases), areas
+
+def make_area_readable( value, unit, decimal = 0):
+    if unit != 'px':
+        u = es.unit()
+        return u.make_area_readable(value, unit, decimal)
+    else:
+        return value, unit
+          
 class image_loader():
     image = {
         'raw' : None,
@@ -242,7 +258,7 @@ class image_loader():
             if self.save_intermediates: 
                 cv2.imwrite( self.path + self.filename['nlm'] + '.tif', self.image['nlm'], params=(cv2.IMWRITE_TIFF_COMPRESSION, 5) )
         
-    def threshold_segmentation( self ):
+    def threshold_segmentation( self, cmap = None ):
         """
         segments the image
 
@@ -260,6 +276,7 @@ class image_loader():
         np.typing.NDArray[np.uint8]
             The resulting mask image, where each phase is represented by an integer value from 0 to n (n=phase count -1)
         """
+        if cmap is None: cmap = 'gist_rainbow'
         if self.image['seg'] is None:
             self.image['seg'] = np.zeros((self.image['nlm'].shape[0],self.image['nlm'].shape[1]), np.uint8)
             i = 0
@@ -271,7 +288,7 @@ class image_loader():
                     self.image['seg'] += phase_mask
                 i+=1
 
-        counts = measure_phase_composition(self.image['seg'], self.phase_labels)
+        self.phase_composition = measure_phase_composition(self.image['seg'], self.phase_labels)
 
         if self.verbose:
             fig, ax = plt.subplots( 1, 3, figsize = ( 18, 5 ) )
@@ -290,7 +307,7 @@ class image_loader():
                 ax[i].set_ylabel( "frequency" )
 
             i = 2
-            img = ax[i].imshow( self.image['seg'],	 cmap='gist_rainbow' )
+            img = ax[i].imshow( self.image['seg'],	 cmap = cmap )
 
             colors = [ img.cmap(img.norm(i)) for i in range(len(self.phase_labels))]
             # create a patch (proxy artist) for every color 
@@ -318,11 +335,11 @@ class image_loader():
                 self.image[key] = cv2.imread( file_path, cv2.IMREAD_GRAYSCALE )
                 self.scaling = es.autodetectScaling( self.filename['raw'] + self.file_extension, self.path )
                 image_loaded = True
-                
+        
         return image_loaded
         
     
-    def __init__(self, filepath, thresh_values, save_intermediates = True, force_reprocess = False, verbose = False ):
+    def __init__(self, filepath, thresh_values, save_intermediates = True, force_reprocess = False, verbose = False, cmap = None ):
         """
         Initiate class image_loader
 
@@ -353,9 +370,16 @@ class image_loader():
         if self.load_image( force_reprocess ):
             self.enhance_image()
             self.denoise_NLMCV2( h=18 )
-            self.threshold_segmentation()
+            self.threshold_segmentation( cmap = cmap )
         
-            
+        self.res_x, self.res_y = self.image['seg'].shape
+        area = (self.scaling['x'] * self.scaling['y'])*(self.res_x * self.res_y)
+        area, unit = make_area_readable(area, self.scaling['unit'], 2)
+        print("\nImage meta data")
+        print("  image area: {:.3f} {}".format(area, unit))
+        print("  resolution: {} x {} px".format(self.res_x, self.res_y))
+        print("  scale:      {:.3f} {}/px".format(self.scaling['x'], self.scaling['unit']))
+        
 class chordLengthDistribution():
     pass
 
@@ -394,18 +418,11 @@ class phaseContent():
 
     scaling = es.getEmptyScaling()
 
-    def make_area_readable(self, value, unit, decimal = 0):
-        if unit != 'px':
-            u = es.unit()
-            return u.make_area_readable(value, unit, decimal)
-        else:
-            return value, unit
-
     def get_tile_area(self, readable=True, in_unit='auto', decimal=0):
         area = self.tile_width * self.tile_height * self.scaling['x']**2
         unit = self.scaling['unit']
         if in_unit == 'auto':
-            if readable: area, unit = self.make_area_readable(area, unit, decimal)
+            if readable: area, unit = make_area_readable(area, unit, decimal)
         else:
             u = es.unit()
             area = u.get_area_in_unit( area, self.scaling['unit'], in_unit )
@@ -415,7 +432,7 @@ class phaseContent():
     def get_dataset_area(self, decimal = 0):
         area, unit = self.get_tile_area( False )
         area = area * self.image_count
-        area, unit = self.make_area_readable(area, unit, decimal)
+        area, unit = make_area_readable(area, unit, decimal)
         return area, unit
 
     def init_phase_list(self, phase_names ):
@@ -524,7 +541,7 @@ class phaseContent():
         if ( self.image_count > 1 ):
             # calculate stabw
             keyName = 'phase_{:02d}_percent'
-            sampleFraction = 0.5# 10/self.image_count
+            sampleFraction = 1#0.5# 10/self.image_count
             self.meanAfterNExperiments = {}
             self.stDevDFList = {}
             self.stDevcols = list(range(self.image_shuffle_count-2))
@@ -567,14 +584,14 @@ class phaseContent():
         else:
             print( "not enough images found!" )
 
-    def area_growth_method( self, segmented_image, seed_window_f=5, step_w=5, experiments=None, verbose=True ):
+    def area_growth_method( self, segmented_image, seed_window_f=5, step_w=5, experiments=None, verbose=True, cmap=None ):
         if experiments == None: experiments = self.experiments
         self.agm_result_list=[]
         min_area_rows = -1
+        areas = []
         for i in range(experiments):
-            self.agm_result_list.append(
-                growImageArea( segmented_image, self.phase_names, seed_window_f = seed_window_f, step_w=step_w, show_result = (verbose and (i==0)) )
-            )
+            result_df, areas = growImageArea( segmented_image, self.phase_names, seed_window_f = seed_window_f, step_w=step_w, show_result = (verbose and (i==0)), cmap = cmap )
+            self.agm_result_list.append( result_df )
             area_rows = len(self.agm_result_list[-1])
             if min_area_rows < 0 or min_area_rows > area_rows: min_area_rows = area_rows
             if verbose and (i==1 or i%10==0): print("{}% done...".format(i))
@@ -587,7 +604,7 @@ class phaseContent():
 
         # convert to xarray data array for stats
         da = xr.DataArray(result_list_cropped, dims=["experiment", "area_size", "phase"])
-        return da
+        return da, areas
 
 
     def __init__(self, folder, phase_names, scaling=None, verbose=False ):
